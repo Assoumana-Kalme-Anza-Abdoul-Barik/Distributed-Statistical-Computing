@@ -96,3 +96,98 @@ file.copy("gr02_bp.pdf", "~/Sites/bp2.pdf", overwrite = TRUE)
 # ACCÈS VIA NAVIGATEUR
 # ==============================================================================
 # L'URL d'accès sera : https://pages.isfa.fr/~maiXYZ/bp2.pdf
+
+# ==============================================================================
+# PARALLÉLISATION : K-MEANS SÉQUENTIEL (BASELINE)
+# ==============================================================================
+# Sélection des données numériques uniquement
+# On exclut TYPE (facteur) et NbAct (calculé précédemment)
+dat_km <- hop[sapply(hop, is.numeric)]
+dat_km$NbAct <- NULL 
+
+# Définition des paramètres
+nb_essais <- 4096
+nb_clusters <- 3
+
+# Mesure du temps d'exécution
+cat("Lancement de kmeans (4096 essais) en cours...\n")
+temps_seq <- system.time({
+  res_km <- kmeans(dat_km, centers = nb_clusters, nstart = nb_essais)
+})
+
+# Affichage du résultat
+print(temps_seq)
+
+# ==============================================================================
+# INSTALLATION ET CHARGEMENT DES BIBLIOTHÈQUES
+# ==============================================================================
+if(!require(microbenchmark)) install.packages("microbenchmark", repos="https://cloud.r-project.org")
+library(microbenchmark)
+
+# ==============================================================================
+# MESURE DE PERFORMANCE (MICROBENCHMARK : 10 ESSAIS)
+# ==============================================================================
+cat("Lancement du microbenchmark (10 essais par méthode)...\n")
+
+res_benchmark <- microbenchmark(
+  # Méthode 1 : Un seul appel massif
+  Direct = {
+    kmeans(dat_km, centers = 3, nstart = 4096)
+  },
+  # Méthode 2 : Appels répétés dans une boucle (préparation parallélisation)
+  Boucle = {
+    meilleur_km <- NULL
+    for (i in 1:16) {
+      res_actuel <- kmeans(dat_km, centers = 3, nstart = 256)
+      if (is.null(meilleur_km) || res_actuel$tot.withinss < meilleur_km$tot.withinss) {
+        meilleur_km <- res_actuel
+      }
+    }
+  },
+  times = 10
+)
+
+# ==============================================================================
+# AFFICHAGE DES RÉSULTATS
+# ==============================================================================
+# Affiche le tableau statistique complet (min, median, max, etc.)
+print(res_benchmark)
+
+# Boxplot pour visualiser la distribution des temps d'exécution
+boxplot(res_benchmark, main = "Comparaison des temps d'exécution (10 essais)")
+
+
+
+# ============================================================================== 
+# ANALYSE DE PERFORMANCE AVEC RPROF 
+# ============================================================================== 
+# Activation du profilage
+Rprof("kmeans_profile.out")
+# Initialisation (bien séparer les lignes)
+meilleur_km <- NULL
+# Exécution de la boucle pour identifier les goulots d'étranglement
+for (i in 1:16) {
+  res_actuel <- kmeans(dat_km, centers = 3, nstart = 256)
+  if (is.null(meilleur_km) || res_actuel$tot.withinss < meilleur_km$tot.withinss) {
+    meilleur_km <- res_actuel
+  }
+}
+# Arrêt du profilage et affichage du rapport
+Rprof(NULL) 
+print(summaryRprof("kmeans_profile.out")$by.self)
+# ============================================================================== 
+# GÉNÉRATION DU GRAPHIQUE COMPARATIF (gr03_perf.pdf) 
+# ==============================================================================
+pdf("gr03_perf.pdf")
+# Comparaison visuelle des mesures stockées dans res_benchmark Utilisation de boxplot sur l'objet microbenchmark directement
+boxplot(res_benchmark,
+        main = "Comparaison des temps : Direct (4096) vs Boucle (16x256)",
+        ylab = "Temps d'exécution (s)",
+        col = c("orange", "lightblue")) 
+dev.off()
+# ============================================================================== 
+# EXPORT ET ACCÈS DISTANT 
+# ============================================================================== 
+# Copie vers le répertoire Sites
+file.copy("gr03_perf.pdf", "~/Sites/perf1.pdf", overwrite = TRUE)
+# URL d'accès : https://pages.isfa.fr/~mai2614301/perf1.pdf
