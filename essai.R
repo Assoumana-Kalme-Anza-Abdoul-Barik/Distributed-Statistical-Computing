@@ -252,3 +252,77 @@ cat("\n--- Bilan des performances ---\n")
 print(resultats_mcore)
 cat("\nLe paramétrage le plus efficace est avec", 
     cores_to_test[which.min(resultats_mcore)], "coeurs.\n")
+
+# ==============================================================================
+# CALCUL DISTRIBUÉ : EXPLORATION SNOW (clusterApply)
+# ==============================================================================
+library(parallel)
+
+# Configuration du cluster local
+ClLocal <- makeCluster(detectCores(), type = "PSOCK")
+
+# Exportation des données nécessaires sur chaque noeud (indispensable en PSOCK)
+clusterExport(ClLocal, "hop")
+
+# 1. TEST INITIAL : 4096 appels de 1 nstart
+# ------------------------------------------------------------------------------
+t_unitaire <- system.time({
+  liste_res <- clusterApply(ClLocal, rep(1, 4096), function(s) {
+    kmeans(log10(hop$NbAct), 9, nstart = s)
+  })
+  # Extraction du meilleur (KMbest)
+  inertes <- sapply(liste_res, function(x) x$tot.withinss)
+  KMbest <- liste_res[[which.min(inertes)]]
+})
+
+# 2. OPTIMISATION : TEST DE DIFFÉRENTES RÉPARTITIONS (Chunks)
+# ------------------------------------------------------------------------------
+# Fonction pour générer des vecteurs dont la somme est 4096
+# nb_blocs : nombre de paquets à envoyer au cluster
+generer_repartition <- function(nb_blocs) {
+  rep(4096 / nb_blocs, nb_blocs)
+}
+
+# Scénarios à tester (moins de messages = souvent plus rapide)
+scenarios <- list(
+  "4096 x 1" = rep(1, 4096),
+  "256 x 16" = generer_repartition(256),
+  "16 x 256" = generer_repartition(16),
+  "8 x 512"  = generer_repartition(8)
+)
+
+resultats_snow <- numeric(length(scenarios))
+names(resultats_snow) <- names(scenarios)
+
+for (nom in names(scenarios)) {
+  cat("Calcul pour le scénario :", nom, "...\n")
+  vecteur_travail <- scenarios[[nom]]
+  
+  resultats_snow[nom] <- system.time({
+    clusterApply(ClLocal, vecteur_travail, function(s) {
+      kmeans(log10(hop$NbAct), 9, nstart = s)
+    })
+  })["elapsed"]
+}
+
+# ==============================================================================
+# GRAPHIQUE DE PERFORMANCE (gr06_clusterApply.pdf)
+# ==============================================================================
+pdf("gr06_clusterApply.pdf")
+
+bp <- barplot(resultats_snow, 
+              main = "Impact de la granularité (clusterApply)",
+              ylab = "Temps écoulé (s)", 
+              col = "darkorange",
+              ylim = c(0, max(resultats_snow) * 1.3))
+
+text(x = bp, y = resultats_snow, labels = round(resultats_snow, 2), pos = 3)
+
+dev.off()
+
+# Nettoyage et export
+stopCluster(ClLocal)
+file.copy("gr06_clusterApply.pdf", "~/Sites/clusterApply.pdf", overwrite = TRUE)
+
+cat("\nLe meilleur remplacement pour rep(1,4096) est :", 
+    names(resultats_snow)[which.min(resultats_snow)], "\n")
