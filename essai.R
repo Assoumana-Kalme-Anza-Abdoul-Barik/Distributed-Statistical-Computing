@@ -191,3 +191,65 @@ dev.off()
 # Copie vers le répertoire Sites
 file.copy("gr03_perf.pdf", "~/Sites/perf1.pdf", overwrite = TRUE)
 # URL d'accès : https://pages.isfa.fr/~mai2614301/perf1.pdf
+
+
+# ==============================================================================
+# COMPARAISON DES MODES D'AGRÉGATION (4096 ESSAIS DÉCOUPÉS EN 4 x 1024) 
+# ==============================================================================
+n_total <- 4096 
+n_bloc <- 1024 
+n_appels <- 4
+# ------------------------------------------------------------------------------
+# 1. APPELS EXPLICITES CONSÉCUTIFS 
+# ------------------------------------------------------------------------------
+t_explicite <- system.time({
+  k1 <- kmeans(dat_km, centers = 3, nstart = n_bloc)
+  k2 <- kmeans(dat_km, centers = 3, nstart = n_bloc)
+  k3 <- kmeans(dat_km, centers = 3, nstart = n_bloc)
+  k4 <- kmeans(dat_km, centers = 3, nstart = n_bloc)
+  
+  # Agrégation manuelle
+  liste_exp <- list(k1, k2, k3, k4)
+  inertes_exp <- sapply(liste_exp, function(x) x$tot.withinss)
+  best_explicite <- liste_exp[[which.min(inertes_exp)]]
+})
+# ------------------------------------------------------------------------------
+# 2. BOUCLE FOR 
+# ------------------------------------------------------------------------------
+t_for <- system.time({
+  best_for <- NULL
+  for (i in 1:n_appels) {
+    res <- kmeans(dat_km, centers = 3, nstart = n_bloc)
+    if (is.null(best_for) || res$tot.withinss < best_for$tot.withinss) {
+      best_for <- res
+    }
+  }
+})
+# ------------------------------------------------------------------------------
+# 3. BOUCLE SAPPLY 
+# ------------------------------------------------------------------------------
+t_sapply <- system.time({
+  liste_sap <- sapply(1:n_appels, function(i) {
+    kmeans(dat_km, centers = 3, nstart = n_bloc)
+  }, simplify = FALSE)
+  
+  inertes_sap <- sapply(liste_sap, function(x) x$tot.withinss)
+  best_sapply <- liste_sap[[which.min(inertes_sap)]]
+})
+# ==============================================================================
+# COMPARAISON DES PERFORMANCES ET GRAPHIQUE (gr04_decoup.pdf) 
+# ==============================================================================
+# Collecte des temps écoulés
+temps_comparaison <- c(t_explicite["elapsed"], t_for["elapsed"], t_sapply["elapsed"]) 
+names(temps_comparaison) <- c("Explicite", "Boucle For", "Sapply") 
+pdf("gr04_decoup.pdf") 
+barplot(temps_comparaison,
+        main = "Comparaison des modes d'agrégation (4 x 1024)",
+        ylab = "Temps écoulé (s)",
+        col = c("steelblue", "orange", "darkgreen"),
+        ylim = c(0, max(temps_comparaison) * 1.2)) 
+dev.off()
+# Export pour visualisation
+file.copy("gr04_decoup.pdf", "~/Sites/decoup.pdf", overwrite = TRUE)
+# Affichage console pour vérification
+print(temps_comparaison)
