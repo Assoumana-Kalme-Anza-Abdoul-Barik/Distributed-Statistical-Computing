@@ -252,3 +252,150 @@ cat("\n--- Bilan des performances ---\n")
 print(resultats_mcore)
 cat("\nLe paramétrage le plus efficace est avec", 
     cores_to_test[which.min(resultats_mcore)], "coeurs.\n")
+
+# ==============================================================================
+# CALCUL DISTRIBUÉ : EXPLORATION SNOW (clusterApply)
+# ==============================================================================
+library(parallel)
+
+# Configuration du cluster local
+ClLocal <- makeCluster(detectCores(), type = "PSOCK")
+
+# Exportation des données nécessaires sur chaque noeud (indispensable en PSOCK)
+clusterExport(ClLocal, "hop")
+
+# 1. TEST INITIAL : 4096 appels de 1 nstart
+# ------------------------------------------------------------------------------
+t_unitaire <- system.time({
+  liste_res <- clusterApply(ClLocal, rep(1, 4096), function(s) {
+    kmeans(log10(hop$NbAct), 9, nstart = s)
+  })
+  # Extraction du meilleur (KMbest)
+  inertes <- sapply(liste_res, function(x) x$tot.withinss)
+  KMbest <- liste_res[[which.min(inertes)]]
+})
+
+# 2. OPTIMISATION : TEST DE DIFFÉRENTES RÉPARTITIONS (Chunks)
+# ------------------------------------------------------------------------------
+# Fonction pour générer des vecteurs dont la somme est 4096
+# nb_blocs : nombre de paquets à envoyer au cluster
+generer_repartition <- function(nb_blocs) {
+  rep(4096 / nb_blocs, nb_blocs)
+}
+
+# Scénarios à tester (moins de messages = souvent plus rapide)
+scenarios <- list(
+  "4096 x 1" = rep(1, 4096),
+  "256 x 16" = generer_repartition(256),
+  "16 x 256" = generer_repartition(16),
+  "8 x 512"  = generer_repartition(8)
+)
+
+resultats_snow <- numeric(length(scenarios))
+names(resultats_snow) <- names(scenarios)
+
+for (nom in names(scenarios)) {
+  cat("Calcul pour le scénario :", nom, "...\n")
+  vecteur_travail <- scenarios[[nom]]
+  
+  resultats_snow[nom] <- system.time({
+    clusterApply(ClLocal, vecteur_travail, function(s) {
+      kmeans(log10(hop$NbAct), 9, nstart = s)
+    })
+  })["elapsed"]
+}
+
+# ==============================================================================
+# GRAPHIQUE DE PERFORMANCE (gr06_clusterApply.pdf)
+# ==============================================================================
+pdf("gr06_clusterApply.pdf")
+
+bp <- barplot(resultats_snow, 
+              main = "Impact de la granularité (clusterApply)",
+              ylab = "Temps écoulé (s)", 
+              col = "darkorange",
+              ylim = c(0, max(resultats_snow) * 1.3))
+
+text(x = bp, y = resultats_snow, labels = round(resultats_snow, 2), pos = 3)
+
+dev.off()
+
+# Nettoyage et export
+stopCluster(ClLocal)
+file.copy("gr06_clusterApply.pdf", "~/Sites/clusterApply.pdf", overwrite = TRUE)
+
+cat("\nLe meilleur remplacement pour rep(1,4096) est :", 
+    names(resultats_snow)[which.min(resultats_snow)], "\n")
+
+
+# ==============================================================================
+# COMPARAISON AVEC LOAD BALANCING ET PARLAPPLY (gr07)
+# ==============================================================================
+# 1. Relance du cluster pour cette nouvelle série de tests
+ClLocal <- makeCluster(detectCores(), type = "PSOCK")
+clusterExport(ClLocal, "hop")
+
+# On utilise le meilleur vecteur trouvé précédemment (ex: 8 x 512)
+meilleur_vecteur <- rep(512, 8)
+
+cat("\nDébut des tests pour gr07 (Load Balancing et parLapply)...\n")
+
+# 2. Mesures de base (sans préciser chunk.size)
+# ------------------------------------------------------------------------------
+t_cALB <- system.time({
+  clusterApplyLB(ClLocal, meilleur_vecteur, function(s) kmeans(log10(hop$NbAct), 9, nstart = s))
+})["elapsed"]
+
+t_pLA <- system.time({
+  parLapply(ClLocal, meilleur_vecteur, function(s) kmeans(log10(hop$NbAct), 9, nstart = s))
+})["elapsed"]
+
+t_pLALB <- system.time({
+  parLapplyLB(ClLocal, meilleur_vecteur, function(s) kmeans(log10(hop$NbAct), 9, nstart = s))
+})["elapsed"]
+
+# 3. Mesures avec le paramètre chunk.size
+# ------------------------------------------------------------------------------
+chunks_a_tester <- c(1, 2, 4)
+res_chunk <- list()
+
+for (cs in chunks_a_tester) {
+  # parLapply avec chunk
+  nom_pLA <- paste0("pLA_chunk", cs)
+  res_chunk[[nom_pLA]] <- system.time({
+    parLapply(ClLocal, meilleur_vecteur, function(s) kmeans(log10(hop$NbAct), 9, nstart = s), chunk.size = cs)
+  })["elapsed"]
+  
+  # parLapplyLB avec chunk
+  nom_pLALB <- paste0("pLALB_chunk", cs)
+  res_chunk[[nom_pLALB]] <- system.time({
+    parLapplyLB(ClLocal, meilleur_vecteur, function(s) kmeans(log10(hop$NbAct), 9, nstart = s), chunk.size = cs)
+  })["elapsed"]
+}
+
+# ==============================================================================
+# SYNTHÈSE GRAPHIQUE (gr07_parLApply.pdf)
+# ==============================================================================
+# Regroupement de toutes les valeurs
+toutes_perfs <- c("ApplyLB" = t_cALB, "parLapply" = t_pLA, "parLapplyLB" = t_pLALB, unlist(res_chunk))
+
+pdf("gr07_parLApply.pdf")
+
+bp <- barplot(toutes_perfs, 
+              main = "Comparaison Load Balancing & Chunk Size",
+              ylab = "Temps écoulé (s)", 
+              col = "lightgreen",
+              las = 2, # Tourne les étiquettes de l'axe X pour qu'elles soient lisibles
+              ylim = c(0, max(toutes_perfs) * 1.3))
+
+text(x = bp, y = toutes_perfs, labels = round(toutes_perfs, 2), pos = 3, cex = 0.8)
+
+dev.off()
+
+# Nettoyage et copie
+stopCluster(ClLocal)
+file.copy("gr07_parLApply.pdf", "~/Sites/parLApply.pdf", overwrite = TRUE)
+
+# Détermination de la configuration la plus rapide
+configuration_opti <- names(toutes_perfs)[which.min(toutes_perfs)]
+cat("\nLa configuration conduisant aux résultats le plus rapidement est :", configuration_opti, "\n")
